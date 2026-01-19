@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"syscall"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs-client/nfs/xdr"
@@ -70,8 +71,7 @@ func onMknod(ctx context.Context, w *response, userHandle Handler) error {
 	fp := userHandle.ToHandle(fs, append(path, string(obj.Filename)))
 
 	switch nfs_ftype(ftype) {
-	case FTYPE_NF3CHR:
-	case FTYPE_NF3BLK:
+	case FTYPE_NF3CHR, FTYPE_NF3BLK:
 		// read devicedata3 = {sattr3, specdata3}
 		attrs, err := ReadSetFileAttributes(w.req.Body)
 		if err != nil {
@@ -86,7 +86,15 @@ func onMknod(ctx context.Context, w *response, userHandle Handler) error {
 			return &NFSStatusError{NFSStatusInval, err}
 		}
 
-		err = cu.Mknod(newFilePath, uint32(attrs.Mode(parent.Mode())), specData1, specData2)
+		// Compute mode with file type included (sattr3 only contains permission bits)
+		mode := uint32(attrs.Mode(parent.Mode()))
+		if nfs_ftype(ftype) == FTYPE_NF3CHR {
+			mode |= syscall.S_IFCHR
+		} else {
+			mode |= syscall.S_IFBLK
+		}
+
+		err = cu.Mknod(newFilePath, mode, specData1, specData2)
 		if err != nil {
 			return &NFSStatusError{NFSStatusAccess, err}
 		}
@@ -113,7 +121,9 @@ func onMknod(ctx context.Context, w *response, userHandle Handler) error {
 		if err != nil {
 			return &NFSStatusError{NFSStatusInval, err}
 		}
-		err = cu.Mkfifo(newFilePath, uint32(attrs.Mode(parent.Mode())))
+		// Include S_IFIFO in the mode (sattr3 only contains permission bits)
+		mode := uint32(attrs.Mode(parent.Mode())) | syscall.S_IFIFO
+		err = cu.Mkfifo(newFilePath, mode)
 		if err != nil {
 			return &NFSStatusError{NFSStatusAccess, err}
 		}
