@@ -147,6 +147,81 @@ func (c *CachingHandler) InvalidateHandle(fs billy.Filesystem, handle []byte) er
 	return nil
 }
 
+// UpdateHandle updates a handle's cached path after a rename operation.
+// This is critical for NFS silly rename support where files remain accessible
+// via their original handle even after being renamed.
+func (c *CachingHandler) UpdateHandle(fs billy.Filesystem, handle []byte, newPath []string) error {
+	id, err := uuid.FromBytes(handle)
+	if err != nil {
+		return err
+	}
+
+	oldEntry, ok := c.activeHandles.Get(id)
+	if !ok {
+		return &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusStale}
+	}
+
+	// Remove from old reverse cache
+	oldPathJoined := oldEntry.f.Join(oldEntry.p...)
+	c.evictReverseCache(oldPathJoined, id)
+
+	// Update the entry with new path
+	newPathCopy := make([]string, len(newPath))
+	copy(newPathCopy, newPath)
+	c.activeHandles.Add(id, entry{f: fs, p: newPathCopy})
+
+	// Add to new reverse cache
+	newPathJoined := fs.Join(newPath...)
+	if _, ok := c.reverseHandles[newPathJoined]; !ok {
+		c.reverseHandles[newPathJoined] = []uuid.UUID{}
+	}
+	c.reverseHandles[newPathJoined] = append(c.reverseHandles[newPathJoined], id)
+
+	return nil
+}
+
+// UpdateHandlesByPath updates ALL handles matching the old path to point to the new path.
+// This is used by rename operations to ensure all handles for a file are updated,
+// regardless of which filesystem instance they were created with.
+func (c *CachingHandler) UpdateHandlesByPath(fs billy.Filesystem, oldPath []string, newPath []string) int {
+	oldPathJoined := fs.Join(oldPath...)
+	uuids, exists := c.reverseHandles[oldPathJoined]
+	if !exists || len(uuids) == 0 {
+		return 0
+	}
+
+	// Copy the slice since we'll modify reverseHandles
+	uuidsCopy := make([]uuid.UUID, len(uuids))
+	copy(uuidsCopy, uuids)
+
+	updated := 0
+	newPathJoined := fs.Join(newPath...)
+	newPathCopy := make([]string, len(newPath))
+	copy(newPathCopy, newPath)
+
+	for _, id := range uuidsCopy {
+		oldEntry, ok := c.activeHandles.Get(id)
+		if !ok {
+			continue
+		}
+
+		// Remove from old reverse cache
+		c.evictReverseCache(oldPathJoined, id)
+
+		// Update the entry with new path (keep original filesystem)
+		c.activeHandles.Add(id, entry{f: oldEntry.f, p: newPathCopy})
+
+		// Add to new reverse cache
+		if _, ok := c.reverseHandles[newPathJoined]; !ok {
+			c.reverseHandles[newPathJoined] = []uuid.UUID{}
+		}
+		c.reverseHandles[newPathJoined] = append(c.reverseHandles[newPathJoined], id)
+		updated++
+	}
+
+	return updated
+}
+
 // HandleLimit exports how many file handles can be safely stored by this cache.
 func (c *CachingHandler) HandleLimit() int {
 	return c.cacheLimit

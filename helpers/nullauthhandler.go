@@ -53,6 +53,11 @@ func (c *NullAuthHandler) InvalidateHandle(billy.Filesystem, []byte) error {
 	return nil
 }
 
+// UpdateHandle handled by CachingHandler
+func (c *NullAuthHandler) UpdateHandle(billy.Filesystem, []byte, []string) error {
+	return nil
+}
+
 // HandleLImit handled by cachingHandler
 func (h *NullAuthHandler) HandleLimit() int {
 	return -1

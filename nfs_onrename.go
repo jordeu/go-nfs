@@ -71,10 +71,11 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 	}
 	preDestData := ToFileAttribute(toDirInfo, toDirPath).AsCache()
 
-	oldHandle := userHandle.ToHandle(fs, append(fromPath, string(from.Filename)))
+	oldPath := append(fromPath, string(from.Filename))
+	newPath := append(toPath, string(to.Filename))
 
-	fromLoc := fs.Join(append(fromPath, string(from.Filename))...)
-	toLoc := fs.Join(append(toPath, string(to.Filename))...)
+	fromLoc := fs.Join(oldPath...)
+	toLoc := fs.Join(newPath...)
 
 	err = fs.Rename(fromLoc, toLoc)
 	if err != nil {
@@ -87,8 +88,21 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusIO, err}
 	}
 
-	if err := userHandle.InvalidateHandle(fs, oldHandle); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+	// Update all handles pointing to the old path to point to the new path.
+	// This is critical for NFS silly rename support (unlink while file is open).
+	// We use type assertion to check if the handler supports UpdateHandlesByPath,
+	// which updates handles by path lookup rather than relying on ToHandle
+	// (which may fail due to filesystem instance comparison issues).
+	if updater, ok := userHandle.(interface {
+		UpdateHandlesByPath(billy.Filesystem, []string, []string) int
+	}); ok {
+		updater.UpdateHandlesByPath(fs, oldPath, newPath)
+	} else {
+		// Fall back to the old approach for handlers that don't support UpdateHandlesByPath
+		oldHandle := userHandle.ToHandle(fs, oldPath)
+		if err := userHandle.UpdateHandle(fs, oldHandle, newPath); err != nil {
+			_ = userHandle.InvalidateHandle(fs, oldHandle)
+		}
 	}
 
 	writer := bytes.NewBuffer([]byte{})

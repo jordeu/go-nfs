@@ -28,6 +28,11 @@ type Handler interface {
 	ToHandle(fs billy.Filesystem, path []string) []byte
 	FromHandle(fh []byte) (billy.Filesystem, []string, error)
 	InvalidateHandle(billy.Filesystem, []byte) error
+	// UpdateHandle updates a handle's cached path after a rename operation.
+	// This is critical for supporting POSIX semantics where files renamed
+	// while open (e.g., NFS silly rename) remain accessible via their handle.
+	// Returns error if handle not found (caller should fall back to InvalidateHandle).
+	UpdateHandle(fs billy.Filesystem, handle []byte, newPath []string) error
 
 	// How many handles can be safely maintained by the handler.
 	HandleLimit() int
